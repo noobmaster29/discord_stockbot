@@ -9,6 +9,7 @@ from sklearn.cluster import AgglomerativeClustering
 import pandas_market_calendars as mcal
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import asyncio
 
 import discord
 from discord.ext import commands
@@ -135,31 +136,34 @@ def generate_sr_chart(ticker: str, asset_type: str) -> go.Figure:
     )
 
     return fig
-
+    
 @bot.command(name="chartsr")
 async def _chartsr(ctx, ticker: str, asset_type: str = "stocks"):
-    """
-    Usage:
-      !chartsr TICKER            → defaults to stocks
-      !chartsr TICKER etf        → ETF
-      !chartsr TICKER cryptocurrency
-    """
-    # normalize & validate
-    asset_type = asset_type.lower()
-    if asset_type not in ("stocks", "etf", "cryptocurrency"):
-        await ctx.send(f"⚠️ Unknown asset type `{asset_type}`, defaulting to `stocks`.")
-        asset_type = "stocks"
-
+    """Usage: !chartsr TICKER [stocks|etf|cryptocurrency]"""
+    # normalize asset_type...
     msg = await ctx.send(f"Generating chart for `{ticker.upper()}` ({asset_type}) …")
+
     try:
+        # 1) Generate the figure synchronously
         fig = generate_sr_chart(ticker, asset_type)
-        img = fig.to_image(format="png", width=1000, height=600)
-        await ctx.send(file=discord.File(io.BytesIO(img), filename=f"{ticker}.png"))
+
+        # 2) Offload the blocking to_image into a threadpool
+        loop = asyncio.get_running_loop()
+        img_bytes = await loop.run_in_executor(
+            None,
+            lambda: fig.to_image(format="png", width=1000, height=600)
+        )
+
+        # 3) Send it back
+        file = discord.File(io.BytesIO(img_bytes), filename=f"{ticker}.png")
+        await ctx.send(file=file)
+
     except Exception as e:
         await ctx.send(f"⚠️ Error: {e}")
+
     finally:
         await msg.delete()
-
+        
 if __name__ == "__main__":
     TOKEN = os.getenv("DISCORD_TOKEN")
     bot.run(TOKEN)
