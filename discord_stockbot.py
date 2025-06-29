@@ -258,19 +258,21 @@ async def _screenshot_trefis(ticker: str) -> bytes:
     await browser.close()
     return png
 
-def crop_bottom(png_bytes: bytes, bottom_pct: float = 0.1) -> bytes:
+def crop_image(png_bytes: bytes, top_pct: float = 0.0, bottom_pct: float = 0.1) -> bytes:
     """
-    Chop off the bottom `bottom_pct` fraction of the image.
+    Crop off the top `top_pct` and bottom `bottom_pct` fractions of the image.
+    E.g. top_pct=0.0, bottom_pct=0.1 removes the bottom 10% only.
     """
     img = Image.open(io.BytesIO(png_bytes))
     w, h = img.size
-    new_h = int(h * (1.0 - bottom_pct))
-    cropped = img.crop((0, 0, w, new_h))
-    buf = io.BytesIO()
+    top_px    = int(h * top_pct)
+    bottom_px = int(h * (1.0 - bottom_pct))
+    cropped   = img.crop((0, top_px, w, bottom_px))
+    buf       = io.BytesIO()
     cropped.save(buf, format="PNG")
     return buf.getvalue()
 
-async def fetch_trefis_bytes(ticker: str, bottom_pct: float = 0.1) -> bytes:
+async def fetch_trefis_bytes(ticker: str, top_pct: float = 0.23, bottom_pct: float = 0.5) -> bytes:
     """
     1) Quick HTTP check (threadpool) to detect:
         • 404 or “Page Not Found” → invalid ticker
@@ -293,7 +295,7 @@ async def fetch_trefis_bytes(ticker: str, bottom_pct: float = 0.1) -> bytes:
 
     # screenshot + crop
     raw = await _screenshot_trefis(ticker)
-    return crop_bottom(raw, bottom_pct=bottom_pct)
+    return crop_image(raw, top_pct=top_pct, bottom_pct=bottom_pct)
 
 ##Bot commands
     
@@ -335,7 +337,7 @@ async def _trefis(ctx, ticker: str):
 
     try:
         # Await the async fetcher directly
-        img_bytes = await fetch_trefis_bytes(ticker, bottom_pct=0.1)
+        img_bytes = await fetch_trefis_bytes(ticker, top_pct=0.23, bottom_pct=0.05)
 
         file = discord.File(
             io.BytesIO(img_bytes),
