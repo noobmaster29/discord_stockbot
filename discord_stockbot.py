@@ -229,7 +229,7 @@ def generate_sr_chart(ticker: str, asset_type: str) -> go.Figure:
     )
     
     # ─── 8. Render ─────────────────────────────────────────────────────────────
-    fig.show()
+    return fig
     
 @bot.command(name="chartsr")
 async def _chartsr(ctx, ticker: str, asset_type: str = "stocks"):
