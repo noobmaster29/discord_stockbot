@@ -244,6 +244,7 @@ class TickerNotFound(Exception):
     pass
 
 async def _screenshot_trefis(ticker: str) -> bytes:
+    """Headless Chromium via pyppeteer → full‐page PNG bytes."""
     browser = await launch(
         headless=True,
         args=["--no-sandbox","--disable-setuid-sandbox","--disable-dev-shm-usage"]
@@ -258,6 +259,9 @@ async def _screenshot_trefis(ticker: str) -> bytes:
     return png
 
 def crop_bottom(png_bytes: bytes, bottom_pct: float = 0.1) -> bytes:
+    """
+    Chop off the bottom `bottom_pct` fraction of the image.
+    """
     img = Image.open(io.BytesIO(png_bytes))
     w, h = img.size
     new_h = int(h * (1.0 - bottom_pct))
@@ -266,21 +270,29 @@ def crop_bottom(png_bytes: bytes, bottom_pct: float = 0.1) -> bytes:
     cropped.save(buf, format="PNG")
     return buf.getvalue()
 
-def fetch_trefis(ticker: str, bottom_pct: float = 0.1) -> bytes:
+async def fetch_trefis_bytes(ticker: str, bottom_pct: float = 0.1) -> bytes:
     """
-    1) Quick HTTP check for invalid ticker / no estimate
-    2) If OK, runs pyppeteer to grab a full‐page PNG, then crops bottom_pct
+    1) Quick HTTP check (threadpool) to detect:
+        • 404 or “Page Not Found” → invalid ticker
+        • redirect to /data/topic/featured → valid but no estimate
+    2) If OK, await the pyppeteer screenshot, then crop.
     """
     url = f"https://www.trefis.com/company?hm={ticker}.trefis"
-    resp = requests.get(url, allow_redirects=True, timeout=10)
-    # invalid ticker → 404 or Page Not Found
+    loop = asyncio.get_running_loop()
+
+    # run the blocking requests.get in executor
+    resp = await loop.run_in_executor(
+        None,
+        lambda: requests.get(url, allow_redirects=True, timeout=10)
+    )
+
     if resp.status_code == 404 or "Page Not Found" in resp.text:
         raise TickerNotFound(f"Ticker `{ticker}` not found.")
-    # valid ticker but no estimate → redirects to featured
     if "data/topic/featured" in resp.url:
         raise TickerNotFound(f"No Trefis estimate available for `{ticker}`.")
-    # otherwise grab + crop
-    raw = asyncio.get_event_loop().run_until_complete(_screenshot_trefis(ticker))
+
+    # screenshot + crop
+    raw = await _screenshot_trefis(ticker)
     return crop_bottom(raw, bottom_pct=bottom_pct)
 
 ##Bot commands
@@ -314,17 +326,21 @@ async def _chartsr(ctx, ticker: str, asset_type: str = "stocks"):
 
 @bot.command(name="trefis")
 async def _trefis(ctx, ticker: str):
-    """Usage: !trefis TICKER — returns a cropped screenshot of the Trefis estimate."""
+    """
+    Usage: !trefis TICKER
+    Returns a cropped screenshot of the Trefis price estimate.
+    """
     ticker = ticker.upper()
     msg = await ctx.send(f"Fetching Trefis estimate for `{ticker}`…")
+
     try:
-        # offload the blocking screenshot + crop
-        loop = asyncio.get_running_loop()
-        img_bytes = await loop.run_in_executor(
-            None,
-            lambda: fetch_trefis(ticker, bottom_pct=0.1)
+        # Await the async fetcher directly
+        img_bytes = await fetch_trefis_bytes(ticker, bottom_pct=0.1)
+
+        file = discord.File(
+            io.BytesIO(img_bytes),
+            filename=f"{ticker}_trefis.png"
         )
-        file = discord.File(io.BytesIO(img_bytes), filename=f"{ticker}_trefis.png")
         await ctx.send(file=file)
 
     except TickerNotFound as e:
@@ -335,7 +351,8 @@ async def _trefis(ctx, ticker: str):
 
     finally:
         await msg.delete()
-        
+
+###Don't touch        
 if __name__ == "__main__":
     TOKEN = os.getenv("DISCORD_TOKEN")
     bot.run(TOKEN)
