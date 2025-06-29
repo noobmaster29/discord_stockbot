@@ -33,8 +33,8 @@ def generate_sr_chart(ticker: str, asset_type: str) -> go.Figure:
     # 'start' = 200 trading days ago (to cover your 200-day SMA):
     start = end - timedelta(days=200)  # subtract a 200-day duration :contentReference[oaicite:1]{index=1}
     
-    ticker = "AAPL"
-    asset_type = "stocks" #stocks or etf, cryptocurrency
+    ticker = ticker
+    asset_type = asset_type #stocks or etf, cryptocurrency
     
     url = (
         f"https://api.nasdaq.com/api/quote/{ticker}/historical"
