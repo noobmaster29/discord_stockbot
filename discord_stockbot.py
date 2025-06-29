@@ -158,5 +158,3 @@ async def _chartsr(ctx, ticker: str, asset_type: str = "stocks"):
 if __name__ == "__main__":
     TOKEN = os.getenv("DISCORD_TOKEN")
     bot.run(TOKEN)
-
-#MTEzMTk3Njk3MzE5MTc2MTk4MQ.GY0Aob.DkAbweVxnYrQgI79jTgJUAV9aPEWYz3xJI6ej4
