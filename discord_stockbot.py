@@ -136,9 +136,6 @@ def generate_sr_chart(ticker: str, asset_type: str) -> go.Figure:
 
     return fig
 
-# ─── Discord Bot ────────────────────────────────────────────
-bot = commands.Bot(command_prefix="!")
-
 @bot.command(name="chartsr")
 async def _chartsr(ctx, ticker: str, asset_type: str = "stocks"):
     """
