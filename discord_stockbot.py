@@ -14,6 +14,14 @@ import asyncio
 import discord
 from discord.ext import commands
 
+#for Trefis functions
+import requests
+from PIL import Image
+from pyppeteer import launch
+import nest_asyncio
+
+nest_asyncio.apply()
+
 # ─── set up intents ───────────────────────────────────────────
 intents = discord.Intents.default()
 intents.message_content = True
@@ -227,9 +235,55 @@ def generate_sr_chart(ticker: str, asset_type: str) -> go.Figure:
         ),
         #margin=dict(b=80)                   # extra bottom margin to fit the legend
     )
-    
     # ─── 8. Render ─────────────────────────────────────────────────────────────
     return fig
+
+## For trefis 
+class TickerNotFound(Exception):
+    """Raised when a ticker is invalid or has no Trefis estimate."""
+    pass
+
+async def _screenshot_trefis(ticker: str) -> bytes:
+    browser = await launch(
+        headless=True,
+        args=["--no-sandbox","--disable-setuid-sandbox","--disable-dev-shm-usage"]
+    )
+    page = await browser.newPage()
+    await page.goto(
+        f"https://www.trefis.com/company?hm={ticker}.trefis",
+        {"waitUntil": "networkidle0"}
+    )
+    png = await page.screenshot({"fullPage": True})
+    await browser.close()
+    return png
+
+def crop_bottom(png_bytes: bytes, bottom_pct: float = 0.1) -> bytes:
+    img = Image.open(io.BytesIO(png_bytes))
+    w, h = img.size
+    new_h = int(h * (1.0 - bottom_pct))
+    cropped = img.crop((0, 0, w, new_h))
+    buf = io.BytesIO()
+    cropped.save(buf, format="PNG")
+    return buf.getvalue()
+
+def fetch_trefis(ticker: str, bottom_pct: float = 0.1) -> bytes:
+    """
+    1) Quick HTTP check for invalid ticker / no estimate
+    2) If OK, runs pyppeteer to grab a full‐page PNG, then crops bottom_pct
+    """
+    url = f"https://www.trefis.com/company?hm={ticker}.trefis"
+    resp = requests.get(url, allow_redirects=True, timeout=10)
+    # invalid ticker → 404 or Page Not Found
+    if resp.status_code == 404 or "Page Not Found" in resp.text:
+        raise TickerNotFound(f"Ticker `{ticker}` not found.")
+    # valid ticker but no estimate → redirects to featured
+    if "data/topic/featured" in resp.url:
+        raise TickerNotFound(f"No Trefis estimate available for `{ticker}`.")
+    # otherwise grab + crop
+    raw = asyncio.get_event_loop().run_until_complete(_screenshot_trefis(ticker))
+    return crop_bottom(raw, bottom_pct=bottom_pct)
+
+##Bot commands
     
 @bot.command(name="chartsr")
 async def _chartsr(ctx, ticker: str, asset_type: str = "stocks"):
@@ -254,6 +308,30 @@ async def _chartsr(ctx, ticker: str, asset_type: str = "stocks"):
 
     except Exception as e:
         await ctx.send(f"⚠️ Error: {e}")
+
+    finally:
+        await msg.delete()
+
+@bot.command(name="trefis")
+async def _trefis(ctx, ticker: str):
+    """Usage: !trefis TICKER — returns a cropped screenshot of the Trefis estimate."""
+    ticker = ticker.upper()
+    msg = await ctx.send(f"Fetching Trefis estimate for `{ticker}`…")
+    try:
+        # offload the blocking screenshot + crop
+        loop = asyncio.get_running_loop()
+        img_bytes = await loop.run_in_executor(
+            None,
+            lambda: fetch_trefis(ticker, bottom_pct=0.1)
+        )
+        file = discord.File(io.BytesIO(img_bytes), filename=f"{ticker}_trefis.png")
+        await ctx.send(file=file)
+
+    except TickerNotFound as e:
+        await ctx.send(f"⚠️ {e}")
+
+    except Exception as e:
+        await ctx.send(f"⚠️ Unexpected error: {e}")
 
     finally:
         await msg.delete()
