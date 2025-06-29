@@ -9,7 +9,15 @@ from sklearn.cluster import AgglomerativeClustering
 import pandas_market_calendars as mcal
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+
+import discord
 from discord.ext import commands
+
+# ─── set up intents ───────────────────────────────────────────
+intents = discord.Intents.default()
+intents.message_content = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ─── Chart Generator ────────────────────────────────────
 def generate_sr_chart(ticker: str, asset_type: str) -> go.Figure:
