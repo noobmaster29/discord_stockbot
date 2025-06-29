@@ -187,7 +187,15 @@ def generate_sr_chart(ticker: str, asset_type: str) -> go.Figure:
             showarrow=False,
             font=dict(size=11)
         ))
-    
+    # ─── Force date formatting & remove gaps ───────────────────────────────
+    for row in (1, 2):
+        fig.update_xaxes(
+            type="date",            
+            rangebreaks=rb,         
+            rangeslider_visible=False,
+            row=row, col=1
+        )
+        
     fig.update_layout(
         shapes=shapes,
         annotations=annotations,
