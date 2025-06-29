@@ -21,201 +21,145 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ─── Chart Generator ────────────────────────────────────
+
 def generate_sr_chart(ticker: str, asset_type: str) -> go.Figure:
-    # ─── 1. Compute dates ───────────────────────────────────────────────
-    # 'end' = today’s date:
-    end = datetime.today().date()  # returns a date object for today :contentReference[oaicite:0]{index=0}
-    # 'start' = 200 trading days ago (to cover your 200-day SMA):
-    start = end - timedelta(days=200)  # subtract a 200-day duration :contentReference[oaicite:1]{index=1}
-    
-    ticker = ticker
-    asset_type = asset_type #stocks or etf, cryptocurrency wip
-    
-    url = (
-        f"https://api.nasdaq.com/api/quote/{ticker}/historical"
-        f"?assetclass={asset_type}&fromdate={start}&todate={end}&limit=1000"
-    )
+    """
+    Generate a 6-month support & resistance chart with moving averages and volume
+    for a given ticker and asset type, removing weekends and exchange holidays.
+    """
+    # 1. Determine date range
+    end_date = datetime.today().date()
+    start_date = end_date - timedelta(days=200)
+
+    # 2. Fetch OHLCV via Nasdaq /chart endpoint
+    url = f"https://api.nasdaq.com/api/quote/{ticker}/chart"
+    params = {
+        "assetclass": asset_type,
+        "fromdate":   start_date.strftime("%Y-%m-%d"),
+        "todate":     end_date.strftime("%Y-%m-%d")
+    }
     headers = {
-        "Accept": "application/json, text/plain, */*",
+        "Accept":     "application/json, text/plain, */*",
         "User-Agent": "Mozilla/5.0"
     }
-    
-    resp = requests.get(url, headers=headers)
+    resp = requests.get(url, params=params, headers=headers)
     resp.raise_for_status()
-    data = resp.json()['data']['tradesTable']['rows']
-    
-    # … after you fetch `data = resp.json()['data']['tradesTable']['rows']` …
-    
+    data = resp.json().get("data", {}).get("chart")
+    if data is None:
+        raise ValueError(f"No chart data returned for {ticker} as {asset_type}")
+
     df = pd.DataFrame(data)
-    
-    # 1) Standardize column names to match your other code
-    df = df.rename(columns={
-        'date':    'Date',
-        'open':    'Open',
-        'high':    'High',
-        'low':     'Low',
-        'close':   'Close',
-        'volume':  'Volume'
-    })
-    
-    # 2) Strip $ and commas from price columns, then convert to float
-    for col in ['Open','High','Low','Close']:
-        df[col] = (
-            df[col]
-            .str.replace(r'[\$,]', '', regex=True)  # remove $ and commas
-            .astype(float)
-        )
-    
-    # 3) Strip commas from Volume, convert to int
-    df['Volume'] = (
-        df['Volume']
-        .str.replace(',', '', regex=False)
-        .astype(int)
-    )
-    
-    # 4) Convert Date to datetime, sort
-    df['Date'] = pd.to_datetime(df['Date'])
-    df = df.sort_values('Date').reset_index(drop=True)
-    
-    # Now df has clean numeric OHLCV
-    #df.head()
-    
-    # dynamic 6-month window
-    end   = df['Date'].max()
-    start = end - pd.DateOffset(months=6)
-    df6   = df[(df['Date'] >= start) & (df['Date'] <= end)].copy()
-    
-    #ensure df6["Date"] is datetime (for Plotly date axis)
-    df6['Date'] = pd.to_datetime(df6['Date'])
-    
-    # ─── 2. Detect pivot highs & lows ─────────────────────────────────────────
-    high_idxs, _ = find_peaks(df6['High'],  distance=5, prominence=1)
-    low_idxs,  _ = find_peaks(-df6['Low'],  distance=5, prominence=1)
-    pivots = np.r_[df6['High'].iloc[high_idxs], df6['Low'].iloc[low_idxs]]
-    
-    # ─── 3. Cluster into support/resistance levels ────────────────────────────
+    df["Date"] = pd.to_datetime(df["dateTime"])  # ensure datetime
+    df = df.set_index("Date").sort_index()
+    for col in ["open", "high", "low", "close", "volume"]:
+        df[col] = df[col].astype(float)
+
+    # 3. Trim to last 6 months
+    end_dt = df.index.max()
+    start_dt = end_dt - pd.DateOffset(months=6)
+    df6 = df.loc[start_dt:end_dt].copy()
+    df6.reset_index(inplace=True)  # bring Date back as a column
+
+    # 4. Compute pivots & cluster levels
+    highs, _ = find_peaks(df6["high"], distance=5, prominence=1)
+    lows,  _ = find_peaks(-df6["low"],  distance=5, prominence=1)
+    pivots = np.r_[
+        df6["high"].iloc[highs].values,
+        df6["low"].iloc[lows].values
+    ]
     N_LEVELS = 6
-    clust = AgglomerativeClustering(n_clusters=N_LEVELS, linkage='ward')
-    labels = clust.fit_predict(pivots.reshape(-1,1))
+    clust = AgglomerativeClustering(n_clusters=N_LEVELS, linkage="ward")
+    labels = clust.fit_predict(pivots.reshape(-1, 1))
     levels = sorted(np.median(pivots[labels == i]) for i in range(N_LEVELS))
-    
-    # Calculate 8- and 21-day EMAs
-    df6['EMA_8']  = df6['Close'].ewm(span=8,  adjust=False).mean()   # exponential smoothing :contentReference[oaicite:5]{index=5}
-    df6['EMA_21'] = df6['Close'].ewm(span=21, adjust=False).mean()   # :contentReference[oaicite:6]{index=6}
-    
-    # Calculate 50-, 100-, and 200-day SMAs
-    df6['SMA_50']  = df6['Close'].rolling(window=50,  min_periods=1).mean()   # simple moving average :contentReference[oaicite:7]{index=7}
-    df6['SMA_100'] = df6['Close'].rolling(window=100, min_periods=1).mean()   # :contentReference[oaicite:8]{index=8}
-    df6['SMA_200'] = df6['Close'].rolling(window=200, min_periods=1).mean()   # :contentReference[oaicite:9]{index=9}
-    
-    
-    # ─── 4. Build figure with candles (row 1) + volume (row 2) ────────────────
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                        row_heights=[0.75,0.25], vertical_spacing=0.02)
 
-    # 1) Candles with x=df6["Date"]
-    fig.add_trace(go.Candlestick(
-        x=df6["Date"], open=df6["Open"], high=df6["High"],
-        low=df6["Low"], close=df6["Close"], name="Price"
-    ), row=1, col=1)
+    # 5. Moving averages
+    df6["EMA_8"]  = df6["close"].ewm(span=8, adjust=False).mean()
+    df6["EMA_21"] = df6["close"].ewm(span=21, adjust=False).mean()
+    df6["SMA_50"]  = df6["close"].rolling(50,  min_periods=1).mean()
+    df6["SMA_100"] = df6["close"].rolling(100, min_periods=1).mean()
+    df6["SMA_200"] = df6["close"].rolling(200, min_periods=1).mean()
 
-    # 2) Volume
-    fig.add_trace(go.Bar(
-        x=df6["Date"], y=df6["Volume"], marker_color="gray",
-        showlegend=False
-    ), row=2, col=1)
-    
-    # Overlay moving averages on the candlestick panel
-    for ma_label, ma_color in [
-        ('EMA_8',  'blue'),
-        ('EMA_21', 'orange'),
-        ('SMA_50', 'green'),
-        ('SMA_100','purple'),
-        ('SMA_200','red')
-    ]:
+    # 6. Compute holidays & rangebreaks
+    nyse = mcal.get_calendar("NYSE")
+    sched = nyse.schedule(
+        start_date=start_dt.date(),
+        end_date=end_dt.date()
+    )
+    all_days = pd.date_range(start_dt, end_dt, freq='D').date
+    holidays = sorted(set(all_days) - set(sched.index.date))
+    hols_str = [d.strftime("%Y-%m-%d") for d in holidays]
+    rangebreaks = [dict(bounds=["sat", "mon"]), dict(values=hols_str)]
+
+    # 7. Build figure
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        row_heights=[0.75, 0.25],
+        vertical_spacing=0.02
+    )
+    # Candlestick
+    fig.add_trace(
+        go.Candlestick(
+            x=df6["Date"], open=df6["open"], high=df6["high"],
+            low=df6["low"], close=df6["close"], name="Price"
+        ), row=1, col=1
+    )
+    # Volume
+    fig.add_trace(
+        go.Bar(
+            x=df6["Date"], y=df6["volume"],
+            marker_color='gray', showlegend=False
+        ), row=2, col=1
+    )
+    # Moving Averages
+    ma_cols = ["EMA_8", "EMA_21", "SMA_50", "SMA_100", "SMA_200"]
+    colors  = ['blue', 'orange', 'green', 'purple', 'red']
+    for col, color in zip(ma_cols, colors):
         fig.add_trace(
             go.Scatter(
-                x=df6['Date'],
-                y=df6[ma_label],
-                mode='lines',
-                name=ma_label,
-                line=dict(width=1.5, color=ma_color)
-            ),
-            row=1, col=1
-        )  # Plotly Scatter on Candlestick :contentReference[oaicite:12]{index=12}
-    
-    
-    # ─── 5. Axis tweaks ─────────────────────────────────────────────────────────
-    # Price axis on left with title
-    fig.update_yaxes(side="left", title_text="Price", row=1, col=1)
-    # Volume axis on left
-    fig.update_yaxes(title_text="Volume", row=2, col=1)
-    
-    # Turn off the default range-slider
-    fig.update_xaxes(rangeslider_visible=False, row=1, col=1)
-    fig.update_xaxes(rangeslider_visible=False, row=2, col=1)
-    
-    # ─── 6. Compute holidays via pandas_market_calendars ───────────────────────
-    # Holidays (using the same code as your notebook)
-    nyse  = mcal.get_calendar("NYSE")
-    sched = nyse.schedule(start_date=df6["Date"].min().date(),
-                          end_date  =df6["Date"].max().date())
-    all_days = pd.date_range(df6["Date"].min(), df6["Date"].max(), freq="D").date
-    hols     = sorted(set(all_days) - set(sched.index.date))
-    hols_str = [d.strftime("%Y-%m-%d") for d in hols]
-    rb = [
-      dict(bounds=["sat","mon"]),
-      dict(values=hols_str)
-    ]
-    
-    # ─── 7. Draw SR lines + labels ─────────────────────────────────────────────
-    shapes, annotations = [], []
+                x=df6["Date"], y=df6[col],
+                mode='lines', name=col,
+                line=dict(width=1.5, color=color)
+            ), row=1, col=1
+        )
+    # Support/Resistance lines
+    shapes = []
+    annotations = []
     for lvl in levels:
-        # dashed line across full width + 2% extra
         shapes.append(dict(
-            type="line",
-            xref="paper", x0=0, x1=1.0,
+            type="line", xref="paper", x0=0, x1=1,
             yref="y1", y0=lvl, y1=lvl,
             line=dict(dash="dash", width=1)
         ))
-        # numeric label just outside right edge
         annotations.append(dict(
-            xref="paper", x=1.01, #1.025
-            yref="y1", y=lvl,
-            xanchor="left",
-            text=f"{lvl:.2f}",
-            showarrow=False,
+            xref="paper", x=1.01, yref="y1", y=lvl,
+            xanchor='left', text=f"{lvl:.2f}", showarrow=False,
             font=dict(size=11)
         ))
-    # ─── Force date formatting & remove gaps ───────────────────────────────
-    for row in (1, 2):
-        fig.update_xaxes(
-            type="date",            
-            rangebreaks=rb,         
-            rangeslider_visible=False,
-            row=row, col=1
-        )
-        
-    fig.update_layout(
-        shapes=shapes,
-        annotations=annotations,
-        margin=dict(l=60, r=80, t=40, b=40),
-        title= ticker.upper() + " – 6 Month Support & Resistance",
-        template="plotly_white",
-        showlegend=True
-    )
-    
-    fig.update_layout(
-        legend=dict(
-            orientation="h",                # vertical list
-            xanchor="right",                # anchor box’s right side at x
-            x=1,                            # right edge of plot
-            yanchor="top",               # anchor box’s bottom at y
-            y=1.2                             # bottom of plotting area :contentReference[oaicite:10]{index=10}
-        ),
-        #margin=dict(b=80)                   # extra bottom margin to fit the legend
-    )
 
+    # Apply shapes & annotations
+    fig.update_layout(shapes=shapes, annotations=annotations)
+    # Axis tweaks
+    fig.update_yaxes(side="left", title_text="Price", row=1, col=1)
+    fig.update_yaxes(title_text="Volume", row=2, col=1)
+    # X-axis date formatting + rangebreaks
+    for r in (1, 2):
+        fig.update_xaxes(
+            type="date", rangeslider_visible=False,
+            rangebreaks=rangebreaks,
+            row=r, col=1
+        )
+    # Final layout
+    fig.update_layout(
+        margin=dict(l=60, r=80, t=40, b=40),
+        title=f"{ticker.upper()} – 6 Month Support & Resistance",
+        template="plotly_white",
+        showlegend=True,
+        legend=dict(
+            orientation="h", x=1, xanchor="right",
+            y=1.2, yanchor="top"
+        )
+    )
     return fig
     
 @bot.command(name="chartsr")
