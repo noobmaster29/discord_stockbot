@@ -85,6 +85,9 @@ def generate_sr_chart(ticker: str, asset_type: str) -> go.Figure:
     start = end - pd.DateOffset(months=6)
     df6   = df[(df['Date'] >= start) & (df['Date'] <= end)].copy()
     
+    #ensure df6["Date"] is datetime (for Plotly date axis)
+    df6['Date'] = pd.to_datetime(df6['Date'])
+    
     # ─── 2. Detect pivot highs & lows ─────────────────────────────────────────
     high_idxs, _ = find_peaks(df6['High'],  distance=5, prominence=1)
     low_idxs,  _ = find_peaks(-df6['Low'],  distance=5, prominence=1)
@@ -107,28 +110,20 @@ def generate_sr_chart(ticker: str, asset_type: str) -> go.Figure:
     
     
     # ─── 4. Build figure with candles (row 1) + volume (row 2) ────────────────
-    fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        row_heights=[0.75, 0.25],
-        vertical_spacing=0.02
-    )
-    
-    fig.add_trace(
-        go.Candlestick(
-            x=df6['Date'], open=df6['Open'],
-            high=df6['High'], low=df6['Low'],
-            close=df6['Close'], name='Price'
-        ), row=1, col=1
-    )
-    
-    fig.add_trace(
-        go.Bar(
-            x=df6['Date'], y=df6['Volume'],
-            marker_color='gray', name='Volume',
-            showlegend=False
-        ), row=2, col=1
-    )
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                        row_heights=[0.75,0.25], vertical_spacing=0.02)
+
+    # 1) Candles with x=df6["Date"]
+    fig.add_trace(go.Candlestick(
+        x=df6["Date"], open=df6["Open"], high=df6["High"],
+        low=df6["Low"], close=df6["Close"], name="Price"
+    ), row=1, col=1)
+
+    # 2) Volume
+    fig.add_trace(go.Bar(
+        x=df6["Date"], y=df6["Volume"], marker_color="gray",
+        showlegend=False
+    ), row=2, col=1)
     
     # Overlay moving averages on the candlestick panel
     for ma_label, ma_color in [
@@ -161,22 +156,17 @@ def generate_sr_chart(ticker: str, asset_type: str) -> go.Figure:
     fig.update_xaxes(rangeslider_visible=False, row=2, col=1)
     
     # ─── 6. Compute holidays via pandas_market_calendars ───────────────────────
-    nyse = mcal.get_calendar('NYSE')
-    sched = nyse.schedule(start_date=start.date(), end_date=end.date())
-    
-    # all calendar days in window
-    all_days = pd.date_range(start.date(), end.date(), freq='D').date
-    # subtract trading days to get holidays/non-trading
-    holidays = sorted(set(all_days) - set(sched.index.date))
-    holidays_str = [d.strftime("%Y-%m-%d") for d in holidays]
-    
-    # apply rangebreaks for weekends + holidays
+    # Holidays (using the same code as your notebook)
+    nyse  = mcal.get_calendar("NYSE")
+    sched = nyse.schedule(start_date=df6["Date"].min().date(),
+                          end_date  =df6["Date"].max().date())
+    all_days = pd.date_range(df6["Date"].min(), df6["Date"].max(), freq="D").date
+    hols     = sorted(set(all_days) - set(sched.index.date))
+    hols_str = [d.strftime("%Y-%m-%d") for d in hols]
     rb = [
-        dict(bounds=["sat", "mon"]),
-        dict(values=holidays_str)
+      dict(bounds=["sat","mon"]),
+      dict(values=hols_str)
     ]
-    fig.update_xaxes(rangebreaks=rb, row=1, col=1)
-    fig.update_xaxes(rangebreaks=rb, row=2, col=1)
     
     # ─── 7. Draw SR lines + labels ─────────────────────────────────────────────
     shapes, annotations = [], []
