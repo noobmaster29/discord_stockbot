@@ -243,17 +243,30 @@ class TickerNotFound(Exception):
     """Raised when a ticker is invalid or has no Trefis estimate."""
     pass
 
+from pyppeteer import launch
+
 async def _screenshot_trefis(ticker: str) -> bytes:
-    """Headless Chromium via pyppeteer → full‐page PNG bytes."""
+    """
+    Headless Chromium via pyppeteer → full‐page PNG bytes.
+    Uses domcontentloaded and a 60 s timeout to avoid navigation timeouts.
+    """
     browser = await launch(
         headless=True,
-        args=["--no-sandbox","--disable-setuid-sandbox","--disable-dev-shm-usage"]
+        args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
     )
     page = await browser.newPage()
+
+    # Optionally bump the default timeout too
+    page.setDefaultNavigationTimeout(60000)  # 60 seconds
+
     await page.goto(
         f"https://www.trefis.com/company?hm={ticker}.trefis",
-        {"waitUntil": "networkidle0"}
+        {
+            "waitUntil": "domcontentloaded",
+            "timeout": 60000
+        }
     )
+
     png = await page.screenshot({"fullPage": True})
     await browser.close()
     return png
