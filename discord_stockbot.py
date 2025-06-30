@@ -98,7 +98,7 @@ async def generate_sr_chart_async(ticker: str, asset_type: str) -> go.Figure:
 def generate_sr_chart(ticker: str, asset_type: str) -> go.Figure:
     # ─── 1. Compute dates ───────────────────────────────────────────────
     end = datetime.today()
-    start = end - timedelta(days=200)
+    start = end - timedelta(days=365)  # 🔥 CHANGE: pull **1 year** so 200‑day SMA always has data
 
     # 🔥 CHANGE: use cached session + TTL
     data = fetch_nasdaq_historical(ticker, asset_type, start, end)
@@ -120,29 +120,34 @@ def generate_sr_chart(ticker: str, asset_type: str) -> go.Figure:
     df["Date"] = pd.to_datetime(df["Date"])
     df = df.sort_values("Date").reset_index(drop=True)
 
-    # dynamic 6‑month window
+    # ─── 2. Indicator computation (FULL DF) ────────────────────────────
+    # 🔥 CHANGE: compute moving averages on the **full** dataframe so 200‑day SMA is valid
+    df["EMA_8"] = df["Close"].ewm(span=8, adjust=False).mean()
+    df["EMA_21"] = df["Close"].ewm(span=21, adjust=False).mean()
+    df["SMA_50"] = df["Close"].rolling(window=50, min_periods=1).mean()
+    df["SMA_100"] = df["Close"].rolling(window=100, min_periods=1).mean()
+    df["SMA_200"] = df["Close"].rolling(window=200, min_periods=1).mean()
+
+    # ─── 3. Six‑month slice for SR levels & plotting ───────────────────
     window_end = df["Date"].max()
     window_start = window_end - pd.DateOffset(months=6)
     df6 = df[(df["Date"] >= window_start) & (df["Date"] <= window_end)].copy()
     df6["Date_str"] = df6["Date"].dt.strftime("%Y-%m-%d")
 
-    # pivot detection
+    # pivot detection on df6
     high_idxs, _ = find_peaks(df6["High"], distance=5, prominence=1)
     low_idxs, _ = find_peaks(-df6["Low"], distance=5, prominence=1)
     pivots = np.r_[df6["High"].iloc[high_idxs], df6["Low"].iloc[low_idxs]]
 
     N_LEVELS = 6
-    clust = AgglomerativeClustering(n_clusters=N_LEVELS, linkage="ward")
-    labels = clust.fit_predict(pivots.reshape(-1, 1))
-    levels = sorted(np.median(pivots[labels == i]) for i in range(N_LEVELS))
+    if len(pivots) >= N_LEVELS:
+        clust = AgglomerativeClustering(n_clusters=N_LEVELS, linkage="ward")
+        labels = clust.fit_predict(pivots.reshape(-1, 1))
+        levels = sorted(np.median(pivots[labels == i]) for i in range(N_LEVELS))
+    else:
+        levels = sorted(pivots)  # fallback if not enough pivots
 
-    df6["EMA_8"] = df6["Close"].ewm(span=8, adjust=False).mean()
-    df6["EMA_21"] = df6["Close"].ewm(span=21, adjust=False).mean()
-    df6["SMA_50"] = df6["Close"].rolling(window=50, min_periods=1).mean()
-    df6["SMA_100"] = df6["Close"].rolling(window=100, min_periods=1).mean()
-    df6["SMA_200"] = df6["Close"].rolling(window=200, min_periods=1).mean()
-
-    # figure
+    # ─── 4. Build figure ───────────────────────────────────────────────
     fig = make_subplots(
         rows=2,
         cols=1,
